@@ -3,7 +3,9 @@ use egui::{
     vec2,
 };
 
-use super::{InsertionPoint, ResizeState, SimplificationOptions, Tile, TileId, Tiles, UiResponse};
+use super::{
+    Container, InsertionPoint, ResizeState, SimplificationOptions, Tile, TileId, Tiles, UiResponse,
+};
 
 /// The kind of edit that triggered the call to [`Behavior::on_edit`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +22,24 @@ pub enum EditAction {
     /// A tab was selected by a click, or by hovering a dragged tile over it,
     /// or there was no active tab and egui picked an arbitrary one.
     TabSelected,
+}
+
+/// Determines what happens to a tab when a user attempts to close it.
+///
+/// Returned by [`Behavior::on_tab_close_response`]. This is a richer alternative
+/// to the legacy boolean [`Behavior::on_tab_close`] hook.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum OnCloseResponse {
+    /// Closes the tab.
+    Close,
+
+    /// Focuses on the tab (does not close).
+    ///
+    /// The tab becomes the active tab in its parent [`crate::Tabs`] container.
+    Focus,
+
+    /// Ignores the close request (does not close).
+    Ignore,
 }
 
 /// The state of a tab, used to inform the rendering of the tab.
@@ -59,8 +79,38 @@ pub trait Behavior<Pane> {
     /// Called when the close-button on a tab is pressed.
     ///
     /// Return `false` to abort the closing of a tab (e.g. after showing a message box).
+    ///
+    /// This is the legacy, binary close hook. For richer control (close / focus / ignore),
+    /// override [`Self::on_tab_close_response`] instead — when overridden it *supersedes*
+    /// this method (the default [`Self::on_tab_close_response`] bridges to this one, but a
+    /// custom [`Self::on_tab_close_response`] will not call `on_tab_close` at all).
     fn on_tab_close(&mut self, _tiles: &mut Tiles<Pane>, _tile_id: TileId) -> bool {
         true
+    }
+
+    /// Called when the close-button on a tab is pressed, returning richer close semantics.
+    ///
+    /// This supersedes [`Self::on_tab_close`]: if you override this method, [`Self::on_tab_close`]
+    /// is no longer consulted for the close decision.
+    ///
+    /// The default implementation bridges to the legacy [`Self::on_tab_close`] hook for
+    /// backward compatibility: `true` maps to [`OnCloseResponse::Close`] and `false` maps to
+    /// [`OnCloseResponse::Ignore`].
+    ///
+    /// - [`OnCloseResponse::Close`]: the tab is removed from the tree.
+    /// - [`OnCloseResponse::Focus`]: the tab is *not* removed; instead it becomes the active
+    ///   tab of its parent [`crate::Tabs`] container (no-op if the parent is not a `Tabs`).
+    /// - [`OnCloseResponse::Ignore`]: nothing happens.
+    fn on_tab_close_response(
+        &mut self,
+        tiles: &mut Tiles<Pane>,
+        tile_id: TileId,
+    ) -> OnCloseResponse {
+        if self.on_tab_close(tiles, tile_id) {
+            OnCloseResponse::Close
+        } else {
+            OnCloseResponse::Ignore
+        }
     }
 
     /// The size of the close button in the tab.
@@ -193,14 +243,9 @@ pub trait Behavior<Pane> {
                 {
                     log::debug!("Tab close requested for tile: {tile_id:?}");
 
-                    // Close the tab if the implementation wants to
-                    if self.on_tab_close(tiles, tile_id) {
-                        log::debug!("Implementation confirmed close request for tile: {tile_id:?}");
-
-                        tiles.remove(tile_id);
-                    } else {
-                        log::debug!("Implementation denied close request for tile: {tile_id:?}");
-                    }
+                    // Ask the implementation what to do, then apply it.
+                    let response = self.on_tab_close_response(tiles, tile_id);
+                    apply_close_response(tiles, tile_id, response);
                 }
             }
         }
@@ -482,6 +527,41 @@ pub trait Behavior<Pane> {
     fn on_edit(&mut self, _edit_action: EditAction) {}
 }
 
+/// Apply the result of a tab close-request to the tiles.
+///
+/// Factored out of [`Behavior::tab_ui`] so the close semantics are unit-testable
+/// without a live [`egui::Ui`]:
+/// - [`OnCloseResponse::Close`]: remove the tile from the tiles.
+/// - [`OnCloseResponse::Focus`]: leave the tile in place and make it the active tab of its
+///   parent [`Tabs`] container. If the tile has no parent, or the parent is not a `Tabs`
+///   container, this is a no-op (we never remove on `Focus`).
+/// - [`OnCloseResponse::Ignore`]: do nothing.
+pub(crate) fn apply_close_response<Pane>(
+    tiles: &mut Tiles<Pane>,
+    tile_id: TileId,
+    response: OnCloseResponse,
+) {
+    match response {
+        OnCloseResponse::Close => {
+            log::debug!("Implementation confirmed close request for tile: {tile_id:?}");
+            tiles.remove(tile_id);
+        }
+        OnCloseResponse::Focus => {
+            log::debug!("Implementation requested focus instead of close for tile: {tile_id:?}");
+            // Make this tab the active tab of its parent `Tabs` container.
+            // Reuse `Tabs::set_active` rather than duplicating activation logic.
+            if let Some(parent_id) = tiles.parent_of(tile_id)
+                && let Some(Tile::Container(Container::Tabs(tabs))) = tiles.get_mut(parent_id)
+            {
+                tabs.set_active(tile_id);
+            }
+        }
+        OnCloseResponse::Ignore => {
+            log::debug!("Implementation denied close request for tile: {tile_id:?}");
+        }
+    }
+}
+
 /// How many columns should we use to fit `n` children in a grid?
 fn num_columns_heuristic(n: usize, size: Vec2, gap: f32, desired_aspect: f32) -> usize {
     let mut best_loss = f32::INFINITY;
@@ -529,5 +609,194 @@ fn test_num_columns_heuristic() {
             ncols == 1 || ncols == 2 || ncols == 4,
             "Size {size:?} got {ncols} columns"
         );
+    }
+}
+
+#[cfg(test)]
+mod close_response_tests {
+    use super::{Behavior, OnCloseResponse, apply_close_response};
+    use crate::{Container, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
+
+    /// Run the part of a real frame that cleans up dangling references and unreachable tiles
+    /// (`simplify` then `gc`), so we can validate the tree after a `Close` removed a tile from
+    /// the arena but left a stale child reference in the parent (exactly as the live UI does).
+    fn run_frame_cleanup(tree: &mut Tree<Pane>, behavior: &mut dyn Behavior<Pane>) {
+        tree.simplify(&SimplificationOptions::default());
+        tree.gc(behavior);
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Pane(u32);
+
+    /// A behavior that returns a fixed [`OnCloseResponse`] from the new hook.
+    struct FixedResponseBehavior(OnCloseResponse);
+
+    impl Behavior<Pane> for FixedResponseBehavior {
+        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut Pane) -> UiResponse {
+            panic!("not used in these tests")
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &Pane) -> egui::WidgetText {
+            panic!("not used in these tests")
+        }
+
+        fn on_tab_close_response(
+            &mut self,
+            _tiles: &mut Tiles<Pane>,
+            _tile_id: TileId,
+        ) -> OnCloseResponse {
+            self.0
+        }
+    }
+
+    /// A behavior that only overrides the *legacy* boolean hook, to exercise the
+    /// default `on_tab_close_response` bridge.
+    struct LegacyBoolBehavior(bool);
+
+    impl Behavior<Pane> for LegacyBoolBehavior {
+        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut Pane) -> UiResponse {
+            panic!("not used in these tests")
+        }
+
+        fn tab_title_for_pane(&mut self, _pane: &Pane) -> egui::WidgetText {
+            panic!("not used in these tests")
+        }
+
+        fn on_tab_close(&mut self, _tiles: &mut Tiles<Pane>, _tile_id: TileId) -> bool {
+            self.0
+        }
+    }
+
+    /// Build a tree: a `Tabs` root with two pane children. Returns `(tree, first_pane, second_pane)`.
+    fn tabs_tree_with_two_panes() -> (Tree<Pane>, TileId, TileId) {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(Pane(1));
+        let b = tiles.insert_pane(Pane(2));
+        let root = tiles.insert_tab_tile(vec![a, b]);
+        let tree = Tree::new("test_tree", root, tiles);
+        (tree, a, b)
+    }
+
+    /// Helper: the active child of the (single) Tabs container in the tree.
+    fn active_of_tabs(tree: &Tree<Pane>) -> Option<TileId> {
+        for tile in tree.tiles.tiles() {
+            if let Tile::Container(Container::Tabs(tabs)) = tile {
+                return tabs.active;
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn close_removes_tile_and_tree_stays_valid() {
+        let (mut tree, a, _b) = tabs_tree_with_two_panes();
+        let mut behavior = FixedResponseBehavior(OnCloseResponse::Close);
+
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        apply_close_response(&mut tree.tiles, a, resp);
+
+        assert!(tree.tiles.get(a).is_none(), "Close should remove the tile");
+
+        // `Close` (like the real UI) only removes the tile from the map; the parent's stale
+        // child reference is cleaned up by the per-frame simplify+gc pass. Run it, then validate.
+        run_frame_cleanup(&mut tree, &mut behavior);
+        tree.validate().expect("tree must stay valid after Close");
+    }
+
+    #[test]
+    fn ignore_keeps_tile_and_tree_stays_valid() {
+        let (mut tree, a, _b) = tabs_tree_with_two_panes();
+        let mut behavior = FixedResponseBehavior(OnCloseResponse::Ignore);
+
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        apply_close_response(&mut tree.tiles, a, resp);
+
+        assert!(
+            tree.tiles.get(a).is_some(),
+            "Ignore must NOT remove the tile"
+        );
+        tree.validate().expect("tree must stay valid after Ignore");
+    }
+
+    #[test]
+    fn focus_keeps_tile_and_makes_it_active() {
+        // Start with `b` active (it was inserted last; set explicitly to be sure).
+        let (mut tree, a, b) = tabs_tree_with_two_panes();
+        {
+            // Make `b` active so that focusing `a` is an observable change.
+            for tile in tree.tiles.tiles_mut() {
+                if let Tile::Container(Container::Tabs(tabs)) = tile {
+                    tabs.set_active(b);
+                }
+            }
+        }
+        assert_eq!(active_of_tabs(&tree), Some(b));
+
+        let mut behavior = FixedResponseBehavior(OnCloseResponse::Focus);
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        apply_close_response(&mut tree.tiles, a, resp);
+
+        assert!(
+            tree.tiles.get(a).is_some(),
+            "Focus must NOT remove the tile"
+        );
+        assert_eq!(
+            active_of_tabs(&tree),
+            Some(a),
+            "Focus must make the tile the active tab of its parent Tabs"
+        );
+        tree.validate().expect("tree must stay valid after Focus");
+    }
+
+    #[test]
+    fn focus_on_tile_without_tabs_parent_is_noop() {
+        // A pane that is the lone root (no Tabs parent). Focus must be a no-op, never a removal.
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(Pane(1));
+        let mut tree = Tree::new("solo_tree", a, tiles);
+
+        let mut behavior = FixedResponseBehavior(OnCloseResponse::Focus);
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        apply_close_response(&mut tree.tiles, a, resp);
+
+        assert!(
+            tree.tiles.get(a).is_some(),
+            "Focus on a parentless tile must NOT remove it"
+        );
+        tree.validate().expect("tree must stay valid");
+    }
+
+    #[test]
+    fn legacy_bool_false_bridges_to_ignore() {
+        let (mut tree, a, _b) = tabs_tree_with_two_panes();
+        let mut behavior = LegacyBoolBehavior(false);
+
+        // The default `on_tab_close_response` should bridge `false` -> Ignore.
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        assert_eq!(resp, OnCloseResponse::Ignore);
+
+        apply_close_response(&mut tree.tiles, a, resp);
+        assert!(
+            tree.tiles.get(a).is_some(),
+            "Legacy `false` must keep the tile (Ignore)"
+        );
+        tree.validate().expect("tree must stay valid");
+    }
+
+    #[test]
+    fn legacy_bool_true_bridges_to_close() {
+        let (mut tree, a, _b) = tabs_tree_with_two_panes();
+        let mut behavior = LegacyBoolBehavior(true);
+
+        let resp = behavior.on_tab_close_response(&mut tree.tiles, a);
+        assert_eq!(resp, OnCloseResponse::Close);
+
+        apply_close_response(&mut tree.tiles, a, resp);
+        assert!(
+            tree.tiles.get(a).is_none(),
+            "Legacy `true` must remove the tile (Close)"
+        );
+        run_frame_cleanup(&mut tree, &mut behavior);
+        tree.validate().expect("tree must stay valid");
     }
 }
