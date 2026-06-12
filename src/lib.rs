@@ -125,7 +125,7 @@ mod tree;
 #[cfg(test)]
 mod proptests;
 
-pub use behavior::{Behavior, EditAction, TabState};
+pub use behavior::{Behavior, EditAction, OnCloseResponse, TabState};
 pub use container::{Container, ContainerKind, Grid, GridLayout, Linear, LinearDir, Shares, Tabs};
 pub use tile::{Tile, TileId};
 pub use tiles::Tiles;
