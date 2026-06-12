@@ -393,24 +393,28 @@ impl<Pane> Tiles<Pane> {
     ///
     /// Finally free up any tiles that are no longer reachable from the root.
     ///
-    /// Returns whether the root survived.
-    #[must_use]
-    pub(super) fn gc_root(
-        &mut self,
-        behavior: &mut dyn Behavior<Pane>,
-        root_id: Option<TileId>,
-    ) -> bool {
+    /// A single shared `visited` set spans every root passed in, so a tile that is
+    /// reachable from *any* of them survives — needed because a tree can have several
+    /// independent roots (the main root plus one per detached viewport window), and
+    /// none of their subtrees should be collected just because another root doesn't
+    /// reach them.
+    ///
+    /// Does not itself decide whether a root tile that got collected should stop being
+    /// named as a root — callers check that afterwards (see `Tree::gc`, upstream #150).
+    pub(super) fn gc_roots(&mut self, behavior: &mut dyn Behavior<Pane>, roots: &[TileId]) {
         let mut visited = Default::default();
 
-        let root_kept = match root_id {
-            Some(root_id) => self.gc_tile_id(behavior, &mut visited, root_id) == GcAction::Keep,
-            None => true,
-        };
+        for &root_id in roots {
+            // We ignore the returned root action: with several roots in play, "this
+            // particular root's tile got collected" doesn't mean the tile is gone from
+            // every root — `Tree::gc` re-checks survival per root after this returns.
+            let _root_action = self.gc_tile_id(behavior, &mut visited, root_id);
+        }
 
         if visited.len() < self.tiles.len() {
-            // This should only happen if the user set up the tree in a bad state,
-            // or if it was restored from a bad state via serde.
-            // …or if there is a bug somewhere 😜
+            // Usually this means a viewport window was just closed (its whole subtree
+            // became unreachable), which is expected. It can also indicate a tree that
+            // was set up or deserialized into a bad state — hence only a debug log.
             log::debug!(
                 "GC collecting tiles: {:?}",
                 self.tiles
