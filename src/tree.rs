@@ -1081,4 +1081,52 @@ mod tests {
         };
         assert!(children.contains(&detached));
     }
+
+    /// F4 (S0.4) — proba of stable per-pane widget id.
+    ///
+    /// `egui_dock` keyed widget ids off the pane's *position* in its array, so a
+    /// drag that reordered tabs silently re-homed egui state (scroll, text
+    /// cursors). `egui_tiles` instead content-addresses: `egui_id` is a pure
+    /// function of `(tree.id, TileId)` (see `TileId::egui_id`), and `TileId` is
+    /// an arena handle that survives every structural move (the S1 proptest
+    /// asserts this — invariant #10). This test pins the *consequence*: a pane's
+    /// `egui_id` is byte-stable across moves and a detach→re-dock round trip,
+    /// regardless of where it lands in the tree.
+    #[test]
+    fn egui_id_is_stable_across_moves_and_detach() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(P(0));
+        let b = tiles.insert_pane(P(1));
+        let c = tiles.insert_pane(P(2));
+        let left = tiles.insert_tab_tile(vec![a, b]);
+        let right = tiles.insert_tab_tile(vec![c]);
+        let root = tiles.insert_horizontal_tile(vec![left, right]);
+        let mut tree = Tree::new("t", root, tiles);
+
+        // The id we expect to never move, no matter where pane `a` is dragged.
+        let id_before = a.egui_id(tree.id());
+
+        // Move `a` from `left` into `right` (reorders, changes parent).
+        tree.move_tile_to_container(a, right, 0, false);
+        assert_eq!(a.egui_id(tree.id()), id_before, "move must not re-home id");
+
+        // Detach `a` into its own native window, then dock it back elsewhere.
+        tree.move_tile_to_new_viewport(a, egui::pos2(5.0, 5.0));
+        assert_eq!(
+            a.egui_id(tree.id()),
+            id_before,
+            "detach must not re-home id"
+        );
+        tree.dock_viewport_back(a, InsertionPoint::new(left, ContainerInsertion::Tabs(0)));
+        assert_eq!(
+            a.egui_id(tree.id()),
+            id_before,
+            "re-dock must not re-home id"
+        );
+
+        // Sibling ids stay distinct from `a`'s — addressing is per-tile, not shared.
+        assert_ne!(b.egui_id(tree.id()), id_before);
+        assert_ne!(c.egui_id(tree.id()), id_before);
+        assert_eq!(tree.validate(), Ok(()));
+    }
 }
