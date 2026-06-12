@@ -125,6 +125,9 @@ mod tree;
 #[cfg(test)]
 mod proptests;
 
+#[cfg(all(test, feature = "serde"))]
+mod serde_roundtrip_tests;
+
 pub use behavior::{Behavior, EditAction, OnCloseResponse, TabState};
 pub use container::{Container, ContainerKind, Grid, GridLayout, Linear, LinearDir, Shares, Tabs};
 pub use tile::{Tile, TileId};
