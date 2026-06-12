@@ -769,6 +769,88 @@ impl<Pane> Tree<Pane> {
             .retain(|viewport| self.tiles.get(viewport.root).is_some());
     }
 
+    /// Check the structural invariants of the tile arena, returning `Err(reason)` on the first
+    /// violation. Read-only; intended as a test oracle and a debugging aid for trees that were
+    /// deserialized or edited into a questionable state.
+    ///
+    /// A well-formed tree is a forest rooted at [`Self::root`] plus every [`ViewportTile::root`]:
+    /// - every container child id exists in [`Self::tiles`];
+    /// - no tile is a child of more than one container (no sharing);
+    /// - the forest is acyclic and every tile is reachable from exactly one root (no orphans);
+    /// - no root is itself a child of some container;
+    /// - each [`crate::Tabs::active`], when set, is one of that container's children.
+    ///
+    /// # Errors
+    /// Returns `Err` with a human-readable description of the first invariant that is violated.
+    pub fn validate(&self) -> Result<(), String> {
+        use std::collections::{HashMap, HashSet};
+
+        // 1. Build the child → parent map, checking existence and single-parent as we go.
+        let mut parent: HashMap<TileId, TileId> = HashMap::new();
+        for (parent_id, tile) in self.tiles.iter() {
+            if let Tile::Container(container) = tile {
+                for &child in container.children() {
+                    if self.tiles.get(child).is_none() {
+                        return Err(format!(
+                            "container {parent_id:?} references missing child {child:?}"
+                        ));
+                    }
+                    if let Some(prev) = parent.insert(child, *parent_id) {
+                        return Err(format!(
+                            "tile {child:?} is a child of both {prev:?} and {parent_id:?}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 2. Each root must exist and must not itself be a child.
+        let roots = self.roots();
+        for &r in &roots {
+            if self.tiles.get(r).is_none() {
+                return Err(format!("root {r:?} does not exist in tiles"));
+            }
+            if let Some(p) = parent.get(&r) {
+                return Err(format!("root {r:?} is also a child of {p:?}"));
+            }
+        }
+
+        // 3. Walk from every root: each tile must be reachable at most once (acyclic, unshared).
+        let mut visited: HashSet<TileId> = HashSet::new();
+        let mut stack: Vec<TileId> = roots.clone();
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                return Err(format!(
+                    "tile {id:?} is reachable more than once (cycle or shared subtree)"
+                ));
+            }
+            if let Some(Tile::Container(container)) = self.tiles.get(id) {
+                stack.extend(container.children().copied());
+            }
+        }
+
+        // 4. No orphans: every tile in the arena must be reachable from some root.
+        for id in self.tiles.tile_ids() {
+            if !visited.contains(&id) {
+                return Err(format!("orphan tile {id:?} is not reachable from any root"));
+            }
+        }
+
+        // 5. Each tab container's active tab, if any, must be one of its children.
+        for (id, tile) in self.tiles.iter() {
+            if let Tile::Container(Container::Tabs(tabs)) = tile
+                && let Some(active) = tabs.active
+                && !tabs.children.contains(&active)
+            {
+                return Err(format!(
+                    "tabs {id:?} active tab {active:?} is not among its children"
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Move a tile to a new container, at the specified insertion index.
     ///
     /// If the insertion index is greater than the current number of children, the tile is appended at the end.
