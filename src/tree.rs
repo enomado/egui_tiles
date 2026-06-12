@@ -876,6 +876,27 @@ impl<Pane> Tree<Pane> {
         }
     }
 
+    /// Is `candidate` equal to `ancestor`, or reachable by walking up the parent
+    /// chain from `candidate` through `ancestor`? Equivalently: does the subtree
+    /// rooted at `ancestor` contain `candidate`?
+    ///
+    /// Walks *up* via [`Tiles::parent_of`] (O(depth × tiles)), bounded by the
+    /// tile count so a pre-existing cycle can't spin forever.
+    fn is_self_or_descendant(&self, candidate: TileId, ancestor: TileId) -> bool {
+        let mut current = candidate;
+        // `..=len` so the first iteration can already match `candidate == ancestor`.
+        for _ in 0..=self.tiles.len() {
+            if current == ancestor {
+                return true;
+            }
+            match self.tiles.parent_of(current) {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
     /// Move the given tile to the given insertion point.
     ///
     /// See [`Self::move_tile_to_container()`] for details on `reflow_grid`.
@@ -889,6 +910,21 @@ impl<Pane> Tree<Pane> {
             "Moving {moved_tile_id:?} into {:?}",
             insertion_point.insertion
         );
+
+        // Guard against moving a tile into itself or one of its own descendants.
+        // Such a move would splice the moved subtree's new parent *inside* that
+        // same subtree, creating a cycle. `gc` later "repairs" the cycle by
+        // dropping the unreachable subtree — silently losing every pane in it.
+        // Reject the move instead (no-op): the only sane outcome of "drop a
+        // container onto something it contains" is to leave the tree unchanged.
+        if self.is_self_or_descendant(insertion_point.parent_id, moved_tile_id) {
+            log::debug!(
+                "Refusing to move {moved_tile_id:?} into its own subtree \
+                 (destination {:?} is self-or-descendant)",
+                insertion_point.parent_id
+            );
+            return;
+        }
 
         if let Some((prev_parent_id, source_index)) = self.remove_tile_id_from_parent(moved_tile_id)
         {

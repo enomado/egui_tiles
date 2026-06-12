@@ -44,6 +44,10 @@ enum Op {
     Gc,
     /// Recursively remove the i-th non-root tile.
     Remove(usize),
+    /// Move the i-th non-root tile into the j-th container tile. Deliberately
+    /// allows the destination to lie *inside* the moved subtree (the cycle case
+    /// that `move_tile`'s self-or-descendant guard must reject as a no-op).
+    MoveTile(usize, usize),
 }
 
 fn op_strategy() -> impl Strategy<Value = Op> {
@@ -55,6 +59,7 @@ fn op_strategy() -> impl Strategy<Value = Op> {
         Just(Op::Simplify),
         Just(Op::Gc),
         any::<u16>().prop_map(|i| Op::Remove(i as usize)),
+        (any::<u16>(), any::<u16>()).prop_map(|(i, j)| Op::MoveTile(i as usize, j as usize)),
     ]
 }
 
@@ -88,6 +93,16 @@ fn pick_non_root(tree: &Tree<u32>, i: usize) -> Option<TileId> {
 fn pick_any(tree: &Tree<u32>, i: usize) -> Option<TileId> {
     let ids = sorted_ids(tree);
     (!ids.is_empty()).then(|| ids[i % ids.len()])
+}
+
+/// The i-th container tile (any kind), in deterministic order. Move destinations
+/// must be containers — `move_tile_to_container` rejects panes.
+fn pick_container(tree: &Tree<u32>, i: usize) -> Option<TileId> {
+    let containers: Vec<TileId> = sorted_ids(tree)
+        .into_iter()
+        .filter(|id| matches!(tree.tiles.get(*id), Some(Tile::Container(_))))
+        .collect();
+    (!containers.is_empty()).then(|| containers[i % containers.len()])
 }
 
 /// `(root, child_count)` iff the main root is a `Tabs` container we can append into.
@@ -167,6 +182,13 @@ proptest! {
                         tree.remove_recursively(id);
                     }
                 }
+                Op::MoveTile(i, j) => {
+                    if let (Some(src), Some(dest)) =
+                        (pick_non_root(&tree, i), pick_container(&tree, j))
+                    {
+                        tree.move_tile_to_container(src, dest, 0, false);
+                    }
+                }
             }
 
             // (1) Structural oracle.
@@ -186,7 +208,12 @@ proptest! {
             // (3) Non-destructive ops must not lose any pane tile.
             if matches!(
                 op,
-                Op::Simplify | Op::Gc | Op::Detach(_) | Op::DockBack(_) | Op::MakeActive(_)
+                Op::Simplify
+                    | Op::Gc
+                    | Op::Detach(_)
+                    | Op::DockBack(_)
+                    | Op::MakeActive(_)
+                    | Op::MoveTile(_, _)
             ) {
                 let panes_after = pane_tiles(&tree);
                 for p in &panes_before {
@@ -200,6 +227,72 @@ proptest! {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// move_tile cycle guard: dropping a container onto something it contains must be
+// a no-op, not a silent subtree-eating cycle.
+// ---------------------------------------------------------------------------
+
+/// Moving a container into one of its own descendants used to splice the new
+/// parent inside the moved subtree, forming a cycle that `gc` then "repaired"
+/// by deleting the whole subtree — silently destroying every pane in it.
+/// The self-or-descendant guard must reject the move (no-op): tree unchanged,
+/// every pane intact, oracle still green.
+#[test]
+fn move_into_own_descendant_is_rejected() {
+    let mut tiles = Tiles::default();
+    let a = tiles.insert_pane(0);
+    let b = tiles.insert_pane(1);
+    let inner = tiles.insert_tab_tile(vec![a, b]); // a container we'll try to misplace
+    let c = tiles.insert_pane(2);
+    let outer = tiles.insert_horizontal_tile(vec![inner, c]);
+    let mut tree = Tree::new("t", outer, tiles);
+
+    let panes_before = pane_tiles(&tree);
+    let snapshot = format!("{tree:?}");
+
+    // Try to move `outer` (the root) into `inner`, which is *inside* `outer`.
+    tree.move_tile_to_container(outer, inner, 0, false);
+    // And `inner` into itself.
+    tree.move_tile_to_container(inner, inner, 0, false);
+
+    // gc would be where the loss surfaced — run it to prove nothing was orphaned.
+    tree.gc(&mut NoopBehavior);
+
+    assert_eq!(tree.validate(), Ok(()), "tree corrupted by rejected move");
+    assert_eq!(
+        pane_tiles(&tree),
+        panes_before,
+        "panes lost: move-into-descendant was not a no-op"
+    );
+    assert_eq!(format!("{tree:?}"), snapshot, "tree mutated by rejected move");
+    // The three original panes are all still reachable.
+    for p in [a, b, c] {
+        assert!(matches!(tree.tiles.get(p), Some(Tile::Pane(_))), "pane {p:?} vanished");
+    }
+}
+
+/// A *legitimate* move (into a container that is not in the moved subtree) still
+/// works — the guard rejects only the cyclic case, not all moves.
+#[test]
+fn move_into_unrelated_container_still_works() {
+    let mut tiles = Tiles::default();
+    let a = tiles.insert_pane(0);
+    let left = tiles.insert_tab_tile(vec![a]);
+    let b = tiles.insert_pane(1);
+    let right = tiles.insert_tab_tile(vec![b]);
+    let root = tiles.insert_horizontal_tile(vec![left, right]);
+    let mut tree = Tree::new("t", root, tiles);
+
+    tree.move_tile_to_container(a, right, 0, false);
+
+    assert_eq!(tree.validate(), Ok(()));
+    let right_children = match tree.tiles.get(right) {
+        Some(Tile::Container(c)) => c.children_vec(),
+        other => panic!("expected container, got {other:?}"),
+    };
+    assert!(right_children.contains(&a), "legit move did not land");
 }
 
 // ---------------------------------------------------------------------------
