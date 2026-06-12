@@ -1,4 +1,4 @@
-use egui::{NumExt as _, Rect, Ui};
+use egui::{NumExt as _, Pos2, Rect, Ui, ViewportBuilder, ViewportId};
 
 use crate::behavior::EditAction;
 use crate::{ContainerInsertion, ContainerKind, UiResponse};
@@ -7,6 +7,29 @@ use super::{
     Behavior, Container, DropContext, InsertionPoint, SimplificationOptions, SimplifyAction, Tile,
     TileId, Tiles,
 };
+
+/// A tile that has been detached into its own native OS window (an egui _viewport_).
+///
+/// Each viewport tile is an independent _root_ of the [`Tree`] (alongside [`Tree::root`]):
+/// it is laid out and rendered into its own [`egui::Context::show_viewport_immediate`] window,
+/// and participates in `simplify`/`gc` as a separate reachability root.
+///
+/// Created by [`Tree::move_tile_to_new_viewport`] (programmatic detach) or by dragging a tile
+/// outside the main window. Re-docked via [`Tree::dock_viewport_back`] or by the user dragging
+/// the window's contents back into the main tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
+pub struct ViewportTile {
+    /// The tile that forms the root of this viewport's subtree.
+    pub root: TileId,
+
+    /// Monitor-space (points) position of the window's top-left.
+    pub screen_pos: Pos2,
+
+    /// While `true`, the window is being driven by the OS drag (we forward
+    /// [`egui::ViewportCommand::StartDrag`] each frame until the pointer is released).
+    pub dragged: bool,
+}
 
 /// The top level type. Contains all persistent state, including layouts and sizes.
 ///
@@ -37,6 +60,11 @@ pub struct Tree<Pane> {
 
     /// All the tiles in the tree.
     pub tiles: Tiles<Pane>,
+
+    /// Tiles that have been detached into their own native windows (viewports).
+    ///
+    /// Each forms an independent root, in addition to [`Self::root`].
+    pub viewport_tiles: Vec<ViewportTile>,
 
     /// When finite, this values contains the exact height of this tree
     #[cfg_attr(
@@ -114,16 +142,22 @@ impl<Pane: std::fmt::Debug> std::fmt::Debug for Tree<Pane> {
             id,
             root,
             tiles,
+            viewport_tiles,
             width,
             height,
         } = self;
 
-        if let Some(root) = root {
+        if root.is_some() || !viewport_tiles.is_empty() {
             writeln!(f, "Tree {{")?;
             writeln!(f, "    id: {id:?}")?;
             writeln!(f, "    width: {width:?}")?;
             writeln!(f, "    height: {height:?}")?;
-            format_tile(f, tiles, 1, *root)?;
+            if !viewport_tiles.is_empty() {
+                writeln!(f, "    viewport_tiles: {viewport_tiles:?}")?;
+            }
+            if let Some(root) = root {
+                format_tile(f, tiles, 1, *root)?;
+            }
             write!(f, "}}")
         } else {
             writeln!(f, "Tree {{ }}")
@@ -143,6 +177,7 @@ impl<Pane> Tree<Pane> {
             id: id.into(),
             root: None,
             tiles: Default::default(),
+            viewport_tiles: Default::default(),
             width: f32::INFINITY,
             height: f32::INFINITY,
         }
@@ -158,6 +193,7 @@ impl<Pane> Tree<Pane> {
             id: id.into(),
             root: Some(root),
             tiles,
+            viewport_tiles: Default::default(),
             width: f32::INFINITY,
             height: f32::INFINITY,
         }
@@ -243,10 +279,10 @@ impl<Pane> Tree<Pane> {
         self.id
     }
 
-    /// Check if [`Self::root`] is [`None`].
+    /// Check if the tree has no tiles at all — neither a main [`Self::root`] nor any viewport.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.root.is_none()
+        self.root.is_none() && self.viewport_tiles.is_empty()
     }
 
     #[inline]
@@ -254,9 +290,59 @@ impl<Pane> Tree<Pane> {
         self.root
     }
 
+    /// All reachability roots of the tree: the main [`Self::root`] (if any) plus every
+    /// [`ViewportTile::root`]. Used by `simplify`/`gc` so detached windows are not collected.
+    #[inline]
+    pub fn roots(&self) -> Vec<TileId> {
+        let mut roots: Vec<TileId> = self.viewport_tiles.iter().map(|t| t.root).collect();
+        if let Some(root) = self.root {
+            roots.push(root);
+        }
+        roots
+    }
+
     #[inline]
     pub fn is_root(&self, tile: TileId) -> bool {
         self.root == Some(tile)
+    }
+
+    /// `true` if `tile` is the root of a detached viewport window.
+    #[inline]
+    pub fn is_viewport_root(&self, tile: TileId) -> bool {
+        self.viewport_tiles.iter().any(|t| t.root == tile)
+    }
+
+    /// Detach a tile into its own native OS window (viewport), positioned at `screen_pos`
+    /// (monitor-space points). The tile is removed from its parent in the main tree and
+    /// becomes an independent viewport root.
+    ///
+    /// This is the programmatic counterpart of dragging a tile out of the main window;
+    /// it is what an app's "open panel as window" action maps to.
+    ///
+    /// No-op if `tile` is already a viewport root.
+    pub fn move_tile_to_new_viewport(&mut self, tile: TileId, screen_pos: Pos2) {
+        if self.is_viewport_root(tile) {
+            return;
+        }
+        // Detach from the main tree (if it lives there). Leaves the `Tile` itself in `tiles`.
+        self.remove_tile_id_from_parent(tile);
+        self.viewport_tiles.push(ViewportTile {
+            root: tile,
+            screen_pos,
+            dragged: false,
+        });
+    }
+
+    /// Re-dock a viewport's root tile back into the main tree at `insertion`, closing its window.
+    ///
+    /// No-op if `tile` is not currently a viewport root.
+    pub fn dock_viewport_back(&mut self, tile: TileId, insertion: InsertionPoint) {
+        let was_viewport = self.viewport_tiles.iter().any(|t| t.root == tile);
+        if !was_viewport {
+            return;
+        }
+        self.viewport_tiles.retain(|t| t.root != tile);
+        self.move_tile(tile, insertion, false);
     }
 
     /// Tiles are visible by default.
@@ -332,6 +418,70 @@ impl<Pane> Tree<Pane> {
             self.tiles.layout_tile(ui.style(), behavior, rect, root);
 
             self.tile_ui(behavior, &mut drop_context, ui, root);
+        }
+
+        // Render each detached tile into its own native window (viewport).
+        // We `take` the list and rebuild it so that closed windows are dropped:
+        // a closed viewport's subtree is then collected by `gc` next frame.
+        let ctx = ui.ctx().clone();
+        for ViewportTile {
+            root,
+            screen_pos,
+            mut dragged,
+        } in std::mem::take(&mut self.viewport_tiles)
+        {
+            // Stable per-window id derived from the root tile id, so window identity
+            // survives across frames and serde round-trips.
+            let viewport_id = ViewportId::from_hash_of(root);
+            let title = behavior.tab_title_for_tile(&self.tiles, root);
+
+            if dragged {
+                // Hand the window over to the OS drag while the pointer is held.
+                ctx.send_viewport_cmd_to(viewport_id, egui::ViewportCommand::StartDrag);
+            }
+
+            let close_requested = ctx.show_viewport_immediate(
+                viewport_id,
+                ViewportBuilder::default()
+                    .with_title(title.text())
+                    .with_position(screen_pos)
+                    .with_inner_size([480.0, 320.0]),
+                |vp_ctx, _class| {
+                    // Build a full-window background `Ui` for this viewport, then render the
+                    // subtree inside it. This mirrors egui's own `CentralPanel::show` internals;
+                    // we use the non-deprecated `show_inside`, which needs a `Ui`, because the
+                    // top-level `CentralPanel::show(ctx)` is deprecated.
+                    let mut panel_ui = egui::Ui::new(
+                        vp_ctx.clone(),
+                        egui::Id::new((vp_ctx.viewport_id(), "egui_tiles_viewport")),
+                        egui::UiBuilder::new()
+                            .layer_id(egui::LayerId::background())
+                            .max_rect(vp_ctx.content_rect()),
+                    );
+                    egui::CentralPanel::default().show_inside(&mut panel_ui, |ui| {
+                        self.tiles.layout_tile(
+                            ui.style(),
+                            behavior,
+                            ui.available_rect_before_wrap(),
+                            root,
+                        );
+                        self.tile_ui(behavior, &mut drop_context, ui, root);
+                    });
+                    vp_ctx.input(|i| i.viewport().close_requested())
+                },
+            );
+
+            // Stop forwarding the OS drag once the pointer is released.
+            dragged &= !ctx.input(|i| i.pointer.any_released());
+
+            if !close_requested {
+                self.viewport_tiles.push(ViewportTile {
+                    root,
+                    screen_pos,
+                    dragged,
+                });
+            }
+            // else: window closed → drop the ViewportTile; `gc` reclaims the subtree.
         }
 
         self.preview_dragged_tile(behavior, &drop_context, ui);
@@ -449,6 +599,29 @@ impl<Pane> Tree<Pane> {
             return;
         };
 
+        if !ui.ctx().content_rect().contains(mouse_pos) {
+            // The pointer has left the main window: detach the dragged tile into its own
+            // native window (viewport), spawned right away so the user gets a live preview.
+            let preview_size = egui::vec2(300.0, 200.0);
+            let screen_pos = if let Some(inner_rect) = ui.ctx().input(|i| i.viewport().inner_rect) {
+                // Translate window-local pointer pos to monitor space, centering the new window
+                // horizontally on the cursor and placing its title bar just above it.
+                mouse_pos + inner_rect.min.to_vec2() + egui::vec2(-0.5 * preview_size.x, -16.0)
+            } else {
+                mouse_pos
+            };
+
+            ui.ctx().stop_dragging();
+            behavior.on_edit(EditAction::TileDragged);
+            self.remove_tile_id_from_parent(dragged_tile_id);
+            self.viewport_tiles.push(ViewportTile {
+                root: dragged_tile_id,
+                screen_pos,
+                dragged: true,
+            });
+            return;
+        }
+
         ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
 
         // Preview what is being dragged:
@@ -517,6 +690,7 @@ impl<Pane> Tree<Pane> {
     ///
     /// This is also called at the start of [`Self::ui`].
     pub fn simplify(&mut self, options: &SimplificationOptions) {
+        // Simplify the main root.
         if let Some(root) = self.root {
             match self.tiles.simplify(options, root, None) {
                 SimplifyAction::Keep => {}
@@ -527,11 +701,29 @@ impl<Pane> Tree<Pane> {
                     self.root = Some(new_root);
                 }
             }
+        }
 
-            if options.all_panes_must_have_tabs
-                && let Some(tile_id) = self.root
-            {
-                self.tiles.make_all_panes_children_of_tabs(false, tile_id);
+        // Simplify each viewport root *independently*. A `Replace` rewrites only that
+        // viewport's own root (NOT `self.root`); a `Remove` drops the whole viewport window.
+        // (The naive POC pushed every `Replace` into `self.root`, which would clobber the
+        // main root with a viewport's new root — that bug is avoided here.)
+        if !self.viewport_tiles.is_empty() {
+            let mut viewports = std::mem::take(&mut self.viewport_tiles);
+            viewports.retain_mut(|vp| match self.tiles.simplify(options, vp.root, None) {
+                SimplifyAction::Keep => true,
+                SimplifyAction::Remove => false,
+                SimplifyAction::Replace(new_root) => {
+                    vp.root = new_root;
+                    true
+                }
+            });
+            self.viewport_tiles = viewports;
+        }
+
+        if options.all_panes_must_have_tabs {
+            // `roots()` returns owned `TileId`s, so no borrow of `self` is held in the loop body.
+            for root in self.roots() {
+                self.tiles.make_all_panes_children_of_tabs(false, root);
             }
         }
     }
@@ -549,7 +741,7 @@ impl<Pane> Tree<Pane> {
     ///
     /// This is also called by [`Self::ui`], so usually you don't need to call this yourself.
     pub fn gc(&mut self, behavior: &mut dyn Behavior<Pane>) {
-        self.tiles.gc_root(behavior, self.root);
+        self.tiles.gc_roots(behavior, &self.roots());
     }
 
     /// Move a tile to a new container, at the specified insertion index.
@@ -768,4 +960,43 @@ fn smooth_preview_rect(ctx: &egui::Context, dragged_tile_id: TileId, new_rect: R
     }
 
     smoothed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ContainerInsertion;
+
+    #[derive(Debug)]
+    struct P(#[expect(dead_code)] usize);
+
+    /// Re-docking a detached viewport returns its root to the main tree and
+    /// removes the window (it is no longer a viewport root).
+    #[test]
+    fn dock_viewport_back_reattaches_and_clears_window() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane(P(0));
+        let b = tiles.insert_pane(P(1));
+        let main_root = tiles.insert_tab_tile(vec![a, b]);
+        let detached = tiles.insert_pane(P(2));
+        let mut tree = Tree::new("t", main_root, tiles);
+
+        tree.move_tile_to_new_viewport(detached, egui::pos2(0.0, 0.0));
+        assert!(tree.is_viewport_root(detached));
+        assert_eq!(tree.roots().len(), 2);
+
+        // Re-dock as the last tab of the main root.
+        let insertion = InsertionPoint::new(main_root, ContainerInsertion::Tabs(2));
+        tree.dock_viewport_back(detached, insertion);
+
+        assert!(!tree.is_viewport_root(detached));
+        assert_eq!(tree.root(), Some(main_root));
+        assert_eq!(tree.roots(), vec![main_root]);
+
+        let children = match tree.tiles.get(main_root) {
+            Some(Tile::Container(c)) => c.children_vec(),
+            other => panic!("expected container, got {other:?}"),
+        };
+        assert!(children.contains(&detached));
+    }
 }
