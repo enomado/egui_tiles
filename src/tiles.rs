@@ -392,18 +392,18 @@ impl<Pane> Tiles<Pane> {
     /// Will also call [`Behavior::retain_pane`] to check if a users wants to remove a pane.
     ///
     /// Finally free up any tiles that are no longer reachable from the root.
-    pub(super) fn gc_root(&mut self, behavior: &mut dyn Behavior<Pane>, root_id: Option<TileId>) {
+    pub(super) fn gc_roots(&mut self, behavior: &mut dyn Behavior<Pane>, roots: &[TileId]) {
         let mut visited = Default::default();
 
-        if let Some(root_id) = root_id {
-            // We ignore the returned root action, because we will never remove the root.
+        for &root_id in roots {
+            // We ignore the returned root action, because we will never remove a root.
             let _root_action = self.gc_tile_id(behavior, &mut visited, root_id);
         }
 
         if visited.len() < self.tiles.len() {
-            // This should only happen if the user set up the tree in a bad state,
-            // or if it was restored from a bad state via serde.
-            // …or if there is a bug somewhere 😜
+            // Usually this means a viewport window was just closed (its whole subtree
+            // became unreachable), which is expected. It can also indicate a tree that
+            // was set up or deserialized into a bad state — hence only a debug log.
             log::debug!(
                 "GC collecting tiles: {:?}",
                 self.tiles
