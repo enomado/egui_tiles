@@ -146,7 +146,7 @@ impl Grid {
             self.children.pop();
         }
 
-        let gap = behavior.gap_width(style);
+        let gap = behavior.grid_gap_width(style);
 
         let visible_children_and_holes = self.visible_children_and_holes(tiles);
 

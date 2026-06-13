@@ -310,6 +310,14 @@ pub trait Behavior<Pane> {
         1.0
     }
 
+    /// Width of the gap between rows and columns of a [`crate::Grid`] container.
+    ///
+    /// Defaults to [`Self::gap_width`], so grids share the global gap unless overridden.
+    /// Override to give grids their own gutter, independent of linear/tab spacing.
+    fn grid_gap_width(&self, style: &egui::Style) -> f32 {
+        self.gap_width(style)
+    }
+
     /// No child should shrink below this width nor height.
     fn min_size(&self) -> f32 {
         32.0
