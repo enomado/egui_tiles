@@ -158,7 +158,8 @@ impl Grid {
             self.children.pop();
         }
 
-        let gap = layout.gap_width;
+        // Grids have their own gutter knob, defaulting to the global `gap_width`.
+        let gap = layout.grid_gap_width;
 
         let visible_children_and_holes = self.visible_children_and_holes(tiles);
 

@@ -62,6 +62,10 @@ pub struct TabState {
 /// same code lay out any [`Tiles`], whatever it happens to store in its panes.
 pub(crate) struct LayoutContext<'a> {
     pub gap_width: f32,
+
+    /// Gutter between rows/columns of a [`crate::Grid`]; defaults to `gap_width`.
+    pub grid_gap_width: f32,
+
     pub tab_bar_height: f32,
     pub grid_auto_column_count: &'a dyn Fn(usize, Rect, f32) -> usize,
 
@@ -96,6 +100,7 @@ pub(crate) fn layout_tiles<Pane, TilesPane>(
 
     let layout = LayoutContext {
         gap_width: behavior.gap_width(style),
+        grid_gap_width: behavior.grid_gap_width(style),
         tab_bar_height: behavior.tab_bar_height(style),
         grid_auto_column_count: &grid_auto_column_count,
         tab_auto_selected: &tab_auto_selected,
@@ -415,6 +420,14 @@ pub trait Behavior<Pane> {
     /// and between rows/columns in a grid layout.
     fn gap_width(&self, _style: &egui::Style) -> f32 {
         1.0
+    }
+
+    /// Width of the gap between rows and columns of a [`crate::Grid`] container.
+    ///
+    /// Defaults to [`Self::gap_width`], so grids share the global gap unless overridden.
+    /// Override to give grids their own gutter, independent of linear/tab spacing.
+    fn grid_gap_width(&self, style: &egui::Style) -> f32 {
+        self.gap_width(style)
     }
 
     /// No child should shrink below this width nor height.
