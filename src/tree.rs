@@ -897,6 +897,29 @@ impl<Pane> Tree<Pane> {
         false
     }
 
+    /// Group `moved_tile_id` together with `target_leaf` into a tab group.
+    ///
+    /// If `target_leaf` is a bare tile (living directly inside a `Linear`/`Grid`, or the root),
+    /// its slot in the parent is replaced by a fresh `Tabs` container holding
+    /// `[target_leaf, moved_tile_id]`, preserving the target's position and share in its parent.
+    /// This is the programmatic equivalent of dropping a tile onto the *center* of another tile
+    /// via drag-and-drop, useful for "open this next to that one" without bubbling the new tile up
+    /// to the nearest enclosing tab container.
+    ///
+    /// If `target_leaf` already sits inside a `Tabs` container, prefer
+    /// [`Self::move_tile_to_container()`] with that container to grow it, rather than nesting a new
+    /// single-tile group; this method would still work but wrap the target redundantly.
+    pub fn group_tile_with(&mut self, moved_tile_id: TileId, target_leaf: TileId) {
+        self.move_tile(
+            moved_tile_id,
+            InsertionPoint {
+                parent_id: target_leaf,
+                insertion: ContainerInsertion::Tabs(usize::MAX),
+            },
+            false,
+        );
+    }
+
     /// Move the given tile to the given insertion point.
     ///
     /// See [`Self::move_tile_to_container()`] for details on `reflow_grid`.
