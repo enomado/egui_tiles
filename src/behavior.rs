@@ -510,7 +510,7 @@ pub trait Behavior<Pane> {
         state: &TabState,
     ) -> Stroke {
         if state.active {
-            Stroke::new(1.0, visuals.widgets.active.bg_fill)
+            Stroke::new(1.0_f32, visuals.widgets.active.bg_fill)
         } else {
             Stroke::NONE
         }
@@ -518,7 +518,7 @@ pub trait Behavior<Pane> {
 
     /// Stroke of the line separating the tab title bar and the content of the active tab.
     fn tab_bar_hline_stroke(&self, visuals: &Visuals) -> Stroke {
-        Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color)
+        Stroke::new(1.0_f32, visuals.widgets.noninteractive.bg_stroke.color)
     }
 
     /// The color of the title text of the tab.
@@ -556,7 +556,7 @@ pub trait Behavior<Pane> {
 
     /// Stroke for the drop preview when [`Self::is_drop_allowed`] returns `false`.
     fn drag_preview_stroke_rejected(&self, _visuals: &Visuals) -> Stroke {
-        Stroke::new(1.0, Color32::from_rgb(200, 60, 60))
+        Stroke::new(1.0_f32, Color32::from_rgb(200, 60, 60))
     }
 
     /// When drag-and-dropping a tile, how do we preview what is about to happen?
