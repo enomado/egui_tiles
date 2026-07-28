@@ -266,10 +266,17 @@ fn move_into_own_descendant_is_rejected() {
         panes_before,
         "panes lost: move-into-descendant was not a no-op"
     );
-    assert_eq!(format!("{tree:?}"), snapshot, "tree mutated by rejected move");
+    assert_eq!(
+        format!("{tree:?}"),
+        snapshot,
+        "tree mutated by rejected move"
+    );
     // The three original panes are all still reachable.
     for p in [a, b, c] {
-        assert!(matches!(tree.tiles.get(p), Some(Tile::Pane(_))), "pane {p:?} vanished");
+        assert!(
+            matches!(tree.tiles.get(p), Some(Tile::Pane(_))),
+            "pane {p:?} vanished"
+        );
     }
 }
 
