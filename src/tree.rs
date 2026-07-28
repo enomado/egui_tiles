@@ -450,9 +450,9 @@ impl<Pane> Tree<Pane> {
                     .with_inner_size([480.0, 320.0]),
                 |vp_ctx, _class| {
                     // Build a full-window background `Ui` for this viewport, then render the
-                    // subtree inside it. This mirrors egui's own `CentralPanel::show` internals;
-                    // we use the non-deprecated `show_inside`, which needs a `Ui`, because the
-                    // top-level `CentralPanel::show(ctx)` is deprecated.
+                    // subtree inside it. We go through a hand-built background `Ui` because the
+                    // top-level `CentralPanel::show(ctx)` is deprecated; the `Ui`-taking `show`
+                    // gives the panel the whole viewport's content rect.
                     let mut panel_ui = egui::Ui::new(
                         vp_ctx.clone(),
                         egui::Id::new((vp_ctx.viewport_id(), "egui_tiles_viewport")),
@@ -460,7 +460,7 @@ impl<Pane> Tree<Pane> {
                             .layer_id(egui::LayerId::background())
                             .max_rect(vp_ctx.content_rect()),
                     );
-                    egui::CentralPanel::default().show_inside(&mut panel_ui, |ui| {
+                    egui::CentralPanel::default().show(&mut panel_ui, |ui| {
                         self.tiles.layout_tile(
                             ui.style(),
                             behavior,
