@@ -461,12 +461,15 @@ impl<Pane> Tree<Pane> {
                             .max_rect(vp_ctx.content_rect()),
                     );
                     egui::CentralPanel::default().show(&mut panel_ui, |ui| {
-                        self.tiles.layout_tile(
-                            ui.style(),
+                        if layout_tiles(
+                            &mut self.tiles,
+                            Some(root),
                             behavior,
+                            ui.style(),
                             ui.available_rect_before_wrap(),
-                            root,
-                        );
+                        ) {
+                            behavior.on_edit(EditAction::TabSelected);
+                        }
                         self.tile_ui(behavior, &mut drop_context, ui, root);
                     });
                     vp_ctx.input(|i| i.viewport().close_requested())

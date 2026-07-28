@@ -113,7 +113,10 @@ fn mutated_tree_round_trips_json_and_ron() {
 
     let json = serde_json::to_string(&original).expect("json serialize");
     let restored: Tree<AppPane> = serde_json::from_str(&json).expect("json deserialize");
-    assert_eq!(original, restored, "mutated tree did not round-trip via JSON");
+    assert_eq!(
+        original, restored,
+        "mutated tree did not round-trip via JSON"
+    );
     assert_eq!(
         restored.validate(),
         Ok(()),
@@ -122,7 +125,10 @@ fn mutated_tree_round_trips_json_and_ron() {
 
     let ron = ron::to_string(&original).expect("ron serialize");
     let restored: Tree<AppPane> = ron::from_str(&ron).expect("ron deserialize");
-    assert_eq!(original, restored, "mutated tree did not round-trip via RON");
+    assert_eq!(
+        original, restored,
+        "mutated tree did not round-trip via RON"
+    );
     assert_eq!(
         restored.validate(),
         Ok(()),
@@ -201,7 +207,10 @@ fn detached_then_redocked_tree_round_trips() {
     // Detach two, re-dock one, leave one detached at a known position.
     tree.move_tile_to_new_viewport(b, egui::pos2(10.0, 20.0));
     tree.move_tile_to_new_viewport(c, egui::pos2(30.0, 40.0));
-    tree.dock_viewport_back(c, InsertionPoint::new(root, ContainerInsertion::Tabs(usize::MAX)));
+    tree.dock_viewport_back(
+        c,
+        InsertionPoint::new(root, ContainerInsertion::Tabs(usize::MAX)),
+    );
 
     assert!(tree.is_viewport_root(b));
     assert!(!tree.is_viewport_root(c));
@@ -209,7 +218,10 @@ fn detached_then_redocked_tree_round_trips() {
 
     let json = serde_json::to_string(&tree).expect("json serialize");
     let restored: Tree<AppPane> = serde_json::from_str(&json).expect("json deserialize");
-    assert_eq!(tree, restored, "detach/redock tree did not round-trip via JSON");
+    assert_eq!(
+        tree, restored,
+        "detach/redock tree did not round-trip via JSON"
+    );
     assert!(restored.is_viewport_root(b));
     assert_eq!(restored.validate(), Ok(()));
     // The redocked pane is back in the main root.
@@ -220,7 +232,10 @@ fn detached_then_redocked_tree_round_trips() {
 
     let ron = ron::to_string(&tree).expect("ron serialize");
     let restored: Tree<AppPane> = ron::from_str(&ron).expect("ron deserialize");
-    assert_eq!(tree, restored, "detach/redock tree did not round-trip via RON");
+    assert_eq!(
+        tree, restored,
+        "detach/redock tree did not round-trip via RON"
+    );
     assert!(restored.is_viewport_root(b));
     assert_eq!(restored.validate(), Ok(()));
 }

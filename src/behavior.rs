@@ -734,7 +734,12 @@ mod close_response_tests {
     struct FixedResponseBehavior(OnCloseResponse);
 
     impl Behavior<Pane> for FixedResponseBehavior {
-        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut Pane) -> UiResponse {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: TileId,
+            _pane: &mut Pane,
+        ) -> UiResponse {
             panic!("not used in these tests")
         }
 
@@ -756,7 +761,12 @@ mod close_response_tests {
     struct LegacyBoolBehavior(bool);
 
     impl Behavior<Pane> for LegacyBoolBehavior {
-        fn pane_ui(&mut self, _ui: &mut egui::Ui, _tile_id: TileId, _pane: &mut Pane) -> UiResponse {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: TileId,
+            _pane: &mut Pane,
+        ) -> UiResponse {
             panic!("not used in these tests")
         }
 

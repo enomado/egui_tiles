@@ -65,7 +65,7 @@ fn main() -> Result<(), eframe::Error> {
     let mut tree = create_tree();
 
     eframe::run_ui_native("egui_tiles viewports", options, move |ui, _frame| {
-        egui::CentralPanel::default().show_inside(ui, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             let mut behavior = TreeBehavior::default();
             tree.ui(&mut behavior, ui);
 
