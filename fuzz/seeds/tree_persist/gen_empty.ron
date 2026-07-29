@@ -1,0 +1,12 @@
+(
+    id: (8876170977667686542),
+    root: None,
+    tiles: (
+        next_tile_id: 1,
+        tiles: {},
+        invisible: [],
+    ),
+    viewport_tiles: [],
+    height: None,
+    width: None,
+)

@@ -1,0 +1,18 @@
+[package]
+name = "egui_tiles-fuzz-corpus-tool"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Kept out of the crate's workspace for the same reason the fuzz crate is: it is a tool, not a
+# member.
+[workspace]
+
+[dependencies]
+ron = "0.12.2"
+serde = { version = "1.0", features = ["derive"] }
+egui = { version = "0.35.0", default-features = false }
+
+[dependencies.egui_tiles]
+path = "../.."
+features = ["serde"]

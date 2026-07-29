@@ -427,7 +427,33 @@ impl<Pane> Tiles<Pane> {
         self.invisible.retain(|tile_id| visited.contains(tile_id));
         self.tiles.retain(|tile_id, _| visited.contains(tile_id));
 
-        root_kept
+        // Tab bookkeeping is invalid state too: `active` must name one of the container's own
+        // children, and a visible one. A file can say otherwise (serde builds the arena
+        // directly), and so can this very pass — the tab that was open may be exactly the one
+        // just collected.
+        //
+        // `Tabs::layout` calls `ensure_active` every frame, so the *rendering* was never in
+        // danger; what was in danger is everything that looks at the tree between loading it and
+        // drawing it — an application deciding which pane to reveal, a snapshot taken for undo,
+        // or a save written before the first frame, which would put the same bad value back on
+        // disk. Repairing it here means `gc` really does deliver what its name promises: a tree
+        // whose invariants hold, independent of the render pass.
+        let repairs: Vec<(TileId, Option<TileId>)> = self
+            .tiles
+            .iter()
+            .filter_map(|(tile_id, tile)| {
+                let Tile::Container(Container::Tabs(tabs)) = tile else {
+                    return None;
+                };
+                let next_active = tabs.next_active(self);
+                (next_active != tabs.active).then_some((*tile_id, next_active))
+            })
+            .collect();
+        for (tile_id, next_active) in repairs {
+            if let Some(Tile::Container(Container::Tabs(tabs))) = self.tiles.get_mut(&tile_id) {
+                tabs.active = next_active;
+            }
+        }
     }
 
     /// Detect cycles, duplications, and other invalid state, and remove them.
@@ -447,9 +473,10 @@ impl<Pane> Tiles<Pane> {
             // What is duplicated is the *reference*, not the tile: we got here through a second
             // parent, and the tile is still alive under the first one. Returning without the
             // re-insert deletes it from the arena outright, and then the first parent names a
-            // child that no longer exists - damage strictly worse than the sharing it was meant
+            // child that no longer exists — damage strictly worse than the sharing it was meant
             // to repair. `simplify` unravels it from there: the parent looks empty, gets pruned,
-            // its parent looks empty, and a tree that was merely ill-formed ends up gone.
+            // its parent looks empty, and a tree that was merely ill-formed ends up gone, with
+            // its panes left behind as orphans.
             self.tiles.insert(tile_id, tile);
             return GcAction::Remove;
         }

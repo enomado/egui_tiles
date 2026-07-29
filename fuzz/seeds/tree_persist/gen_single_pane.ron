@@ -1,0 +1,14 @@
+(
+    id: (11886062350316822932),
+    root: Some((1)),
+    tiles: (
+        next_tile_id: 2,
+        tiles: {
+            (1): Pane("p0"),
+        },
+        invisible: [],
+    ),
+    viewport_tiles: [],
+    height: None,
+    width: None,
+)

@@ -28,6 +28,12 @@ pub struct ViewportTile {
 
     /// While `true`, the window is being driven by the OS drag (we forward
     /// [`egui::ViewportCommand::StartDrag`] each frame until the pointer is released).
+    ///
+    /// Transient: it belongs to a pointer gesture, not to the layout. It is deliberately not
+    /// persisted — a layout saved while a window was being dragged (an autosave, or a crash)
+    /// would otherwise restore into a window that grabs the cursor on startup and only lets go
+    /// on the next mouse-release.
+    #[cfg_attr(feature = "serde", serde(skip))]
     pub dragged: bool,
 }
 
@@ -64,6 +70,12 @@ pub struct Tree<Pane> {
     /// Tiles that have been detached into their own native windows (viewports).
     ///
     /// Each forms an independent root, in addition to [`Self::root`].
+    ///
+    /// `default` on purpose: this field is a fork addition, so every layout written before it
+    /// existed lacks it. Without a default, serde rejects such a file *whole*, and an
+    /// application that (sensibly) falls back to a built-in layout when a save fails to parse
+    /// throws away the user's entire arrangement over one missing field.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub viewport_tiles: Vec<ViewportTile>,
 
     /// When finite, this values contains the exact height of this tree
@@ -1383,5 +1395,191 @@ mod tests {
         assert_ne!(b.egui_id(tree.id()), id_before);
         assert_ne!(c.egui_id(tree.id()), id_before);
         assert_eq!(tree.validate(), Ok(()));
+    }
+
+    /// Keeps every pane; used to drive `gc` in tests that are not about `retain_pane`.
+    struct KeepEverything;
+
+    impl Behavior<&'static str> for KeepEverything {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: TileId,
+            _pane: &mut &'static str,
+        ) -> UiResponse {
+            UiResponse::None
+        }
+
+        fn tab_title_for_pane(&mut self, pane: &&'static str) -> egui::WidgetText {
+            (*pane).into()
+        }
+    }
+
+    /// Drops one specific pane, the way an application removes a closed document.
+    struct DropPane(&'static str);
+
+    impl Behavior<&'static str> for DropPane {
+        fn pane_ui(
+            &mut self,
+            _ui: &mut egui::Ui,
+            _tile_id: TileId,
+            _pane: &mut &'static str,
+        ) -> UiResponse {
+            UiResponse::None
+        }
+
+        fn tab_title_for_pane(&mut self, pane: &&'static str) -> egui::WidgetText {
+            (*pane).into()
+        }
+
+        fn retain_pane(&mut self, pane: &&'static str) -> bool {
+            *pane != self.0
+        }
+    }
+
+    /// A saved layout can say that the open tab of a tab container is a tile which is not one of
+    /// its tabs — serde builds the arena directly, so nothing stops it. `gc` is the pass whose
+    /// documented job is "detect invalid state and fix it", and this is invalid state.
+    ///
+    /// Until it was fixed here, the only thing that repaired it was `Tabs::layout`, i.e. the
+    /// render pass. Anything looking at the tree *before* the first frame — an application
+    /// deciding which pane to reveal, an undo snapshot, a save written on startup — saw the bad
+    /// value, and the save put it straight back on disk.
+    #[test]
+    fn gc_fixes_an_open_tab_that_is_not_one_of_the_tabs() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane("a");
+        let b = tiles.insert_pane("b");
+        let stranger = tiles.insert_pane("stranger");
+        let tabs = tiles.insert_tab_tile(vec![a, b]);
+        let side = tiles.insert_tab_tile(vec![stranger]);
+        let root = tiles.insert_horizontal_tile(vec![tabs, side]);
+        let mut tree = Tree::new("gc_active", root, tiles);
+
+        // The damaged state: alive tile, wrong container.
+        if let Some(Tile::Container(Container::Tabs(container))) = tree.tiles.get_mut(tabs) {
+            container.active = Some(stranger);
+        } else {
+            panic!("setup: expected a tab container");
+        }
+        assert!(
+            tree.validate().is_err(),
+            "setup: the tree is supposed to start out ill-formed"
+        );
+
+        tree.gc(&mut KeepEverything);
+
+        assert_eq!(tree.validate(), Ok(()));
+        match tree.tiles.get(tabs) {
+            Some(Tile::Container(Container::Tabs(container))) => assert_eq!(
+                container.active,
+                Some(a),
+                "the open tab should fall back to the first tab the container actually has"
+            ),
+            other => panic!("expected a tab container, got {other:?}"),
+        }
+        // The stranger belongs to the other container and must not have been moved or dropped.
+        match tree.tiles.get(side) {
+            Some(Tile::Container(Container::Tabs(container))) => {
+                assert_eq!(container.children, vec![stranger]);
+            }
+            other => panic!("expected a tab container, got {other:?}"),
+        }
+    }
+
+    /// A tile named as a child by two different containers must lose the second *reference*, not
+    /// itself.
+    ///
+    /// Sharing is reachable both from a saved file (serde builds the arena directly) and from
+    /// `Tiles::insert`, which is public and takes any id. `gc` used to remove the tile from the
+    /// arena on the duplicate visit and never put it back, so the container that legitimately
+    /// owned it was left naming a child that no longer existed — and `simplify` then pruned that
+    /// container as empty, then its parent, until the whole tree was gone and its panes were
+    /// orphans. Found by the `tree_persist` fuzzer.
+    #[test]
+    fn gc_drops_the_second_reference_to_a_shared_tile_and_not_the_tile() {
+        let mut tiles = Tiles::default();
+        let pane = tiles.insert_pane("shared");
+        let first = tiles.insert_tab_tile(vec![pane]);
+        let second = tiles.insert_tab_tile(vec![pane]); // the same tile, a second parent
+        let root = tiles.insert_horizontal_tile(vec![first, second]);
+        let mut tree = Tree::new("shared", root, tiles);
+        assert!(
+            tree.validate().is_err(),
+            "setup: a shared tile is exactly what the oracle should reject"
+        );
+
+        tree.gc(&mut KeepEverything);
+
+        assert_eq!(tree.validate(), Ok(()));
+        assert!(
+            tree.tiles.get(pane).is_some(),
+            "the shared tile itself must survive — only one of the two references is bogus"
+        );
+        match tree.tiles.get(first) {
+            Some(Tile::Container(Container::Tabs(container))) => {
+                assert_eq!(
+                    container.children,
+                    vec![pane],
+                    "the first parent to reach the tile keeps it"
+                );
+            }
+            other => panic!("expected a tab container, got {other:?}"),
+        }
+        match tree.tiles.get(second) {
+            Some(Tile::Container(Container::Tabs(container))) => {
+                assert!(
+                    container.children.is_empty(),
+                    "the second reference is the one that has to go"
+                );
+            }
+            other => panic!("expected a tab container, got {other:?}"),
+        }
+
+        // And the whole point: the rest of the frame's normalization must not unravel the tree.
+        tree.simplify(&SimplificationOptions::default());
+        assert_eq!(tree.validate(), Ok(()));
+        assert!(
+            tree.root.is_some(),
+            "the tree must still have a root after gc+simplify"
+        );
+        assert!(
+            tree.tiles.get(pane).is_some(),
+            "the pane must still be in the tree after gc+simplify"
+        );
+    }
+
+    /// The same repair, reached from the other direction: `gc` itself removes the pane that was
+    /// the open tab. Without the repair the container keeps pointing at a tile that no longer
+    /// exists anywhere in the arena.
+    #[test]
+    fn gc_moves_the_open_tab_off_a_pane_it_just_collected() {
+        let mut tiles = Tiles::default();
+        let a = tiles.insert_pane("a");
+        let doomed = tiles.insert_pane("doomed");
+        let root = tiles.insert_tab_tile(vec![a, doomed]);
+        let mut tree = Tree::new("gc_collected", root, tiles);
+
+        if let Some(Tile::Container(Container::Tabs(container))) = tree.tiles.get_mut(root) {
+            container.active = Some(doomed);
+        } else {
+            panic!("setup: expected a tab container");
+        }
+        assert_eq!(
+            tree.validate(),
+            Ok(()),
+            "setup: this tree is well-formed — the damage is about to be done by gc itself"
+        );
+
+        tree.gc(&mut DropPane("doomed"));
+
+        assert_eq!(tree.validate(), Ok(()));
+        assert!(tree.tiles.get(doomed).is_none(), "the pane was dropped");
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Tabs(container))) => {
+                assert_eq!(container.active, Some(a));
+            }
+            other => panic!("expected a tab container, got {other:?}"),
+        }
     }
 }

@@ -239,3 +239,80 @@ fn detached_then_redocked_tree_round_trips() {
     assert!(restored.is_viewport_root(b));
     assert_eq!(restored.validate(), Ok(()));
 }
+
+/// A layout written *before* viewports existed must still load.
+///
+/// `Tree::viewport_tiles` is a fork addition, so every file an earlier build saved lacks the
+/// field. Serde rejects a struct with a missing field unless it has a default, and the rejection
+/// is not partial: the whole file fails to parse. An application that falls back to a built-in
+/// layout when a save cannot be read (the sensible thing to do) then silently discards the
+/// user's entire arrangement — which is how this was found, on a real file from `app/`.
+#[test]
+fn a_layout_saved_before_viewports_existed_still_loads() {
+    // Deliberately hand-written rather than produced by the current writer: the point is a file
+    // shape the current writer can no longer emit.
+    let old_file = r#"(
+        id: (10123358262085802330),
+        root: Some((2)),
+        tiles: (
+            next_tile_id: 3,
+            tiles: {
+                (1): Pane(Counter(7)),
+                (2): Container(Tabs((
+                    children: [(1)],
+                    active: Some((1)),
+                ))),
+            },
+            invisible: [],
+        ),
+        height: None,
+        width: None,
+    )"#;
+
+    let tree: Tree<AppPane> = ron::from_str(old_file).expect("a pre-viewport layout must load");
+    assert_eq!(tree.validate(), Ok(()));
+    assert!(
+        tree.viewport_tiles.is_empty(),
+        "a file that never knew about viewports must load as having none"
+    );
+    assert_eq!(tree.tiles.len(), 2, "the layout itself must survive intact");
+}
+
+/// A window caught mid-drag must not resume dragging after a reload.
+///
+/// `ViewportTile::dragged` says "the OS is dragging this window right now, keep forwarding
+/// `StartDrag`". That is a property of a pointer gesture, not of a layout, and the gesture ends
+/// on the next mouse-release — which, after a restart, has not happened yet. Persisting it turns
+/// an autosave (or a crash) during a window drag into a window glued to the cursor on startup.
+#[test]
+fn a_window_caught_mid_drag_does_not_resume_dragging_after_a_reload() {
+    let mut tiles = Tiles::default();
+    let a = tiles.insert_pane(AppPane::Counter(1));
+    let b = tiles.insert_pane(AppPane::Empty);
+    let root = tiles.insert_tab_tile(vec![a, b]);
+    let mut tree = Tree::new("mid_drag", root, tiles);
+
+    tree.move_tile_to_new_viewport(b, egui::pos2(300.0, 150.0));
+    let viewport = tree
+        .viewport_tiles
+        .first_mut()
+        .expect("detaching must create a viewport");
+    viewport.dragged = true;
+    let position = viewport.screen_pos;
+
+    let ron = ron::to_string(&tree).expect("ron serialize");
+    let restored: Tree<AppPane> = ron::from_str(&ron).expect("ron deserialize");
+
+    let restored_viewport = restored
+        .viewport_tiles
+        .first()
+        .expect("the detached window must survive the save");
+    assert!(
+        !restored_viewport.dragged,
+        "a reloaded layout must not think a window is still being dragged"
+    );
+    // Everything that *is* layout still has to survive — the fix must not cost the window.
+    assert_eq!(restored_viewport.root, b);
+    assert_eq!(restored_viewport.screen_pos, position);
+    assert_eq!(restored.validate(), Ok(()));
+}

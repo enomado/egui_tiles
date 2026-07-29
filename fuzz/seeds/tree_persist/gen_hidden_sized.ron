@@ -1,0 +1,26 @@
+(
+    id: (4588431039853985093),
+    root: Some((4)),
+    tiles: (
+        next_tile_id: 5,
+        tiles: {
+            (3): Pane("p2"),
+            (1): Pane("p0"),
+            (4): Container(Tabs((
+                children: [
+                    (1),
+                    (2),
+                    (3),
+                ],
+                active: Some((1)),
+            ))),
+            (2): Pane("p1"),
+        },
+        invisible: [
+            (3),
+        ],
+    ),
+    viewport_tiles: [],
+    height: Some(720.5),
+    width: Some(1280.0),
+)

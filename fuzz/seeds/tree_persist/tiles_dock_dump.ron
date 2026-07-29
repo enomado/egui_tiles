@@ -1,0 +1,111 @@
+(
+    id: (10123358262085802330),
+    root: Some((17)),
+    tiles: (
+        next_tile_id: 44,
+        tiles: {
+            (12): Container(Tabs((
+                children: [
+                    (9),
+                    (10),
+                    (11),
+                ],
+                active: Some((11)),
+            ))),
+            (14): Container(Tabs((
+                children: [
+                    (13),
+                    (26),
+                ],
+                active: Some((26)),
+            ))),
+            (30): Pane("p2"),
+            (3): Pane("p3"),
+            (17): Container(Tabs((
+                children: [
+                    (25),
+                    (33),
+                    (21),
+                    (31),
+                ],
+                active: Some((25)),
+            ))),
+            (24): Pane("p5"),
+            (11): Pane("p6"),
+            (21): Pane("p7"),
+            (4): Pane("p8"),
+            (38): Container(Tabs((
+                children: [
+                    (40),
+                    (43),
+                ],
+                active: Some((43)),
+            ))),
+            (8): Container(Tabs((
+                children: [
+                    (7),
+                ],
+                active: Some((7)),
+            ))),
+            (16): Container(Linear((
+                children: [
+                    (8),
+                    (12),
+                    (14),
+                ],
+                dir: Vertical,
+                shares: (
+                    shares: {
+                        (8): 0.66,
+                        (14): 1.2577112,
+                        (12): 0.08228851,
+                    },
+                ),
+            ))),
+            (10): Pane("p12"),
+            (7): Pane("p13"),
+            (40): Pane("p14"),
+            (25): Container(Linear((
+                children: [
+                    (3),
+                    (38),
+                    (20),
+                    (16),
+                ],
+                dir: Horizontal,
+                shares: (
+                    shares: {
+                        (38): 0.39220694,
+                        (16): 0.80091584,
+                        (3): 0.10823069,
+                        (20): 1.5042208,
+                    },
+                ),
+            ))),
+            (20): Container(Tabs((
+                children: [
+                    (1),
+                    (2),
+                    (24),
+                    (29),
+                    (30),
+                    (4),
+                ],
+                active: Some((1)),
+            ))),
+            (33): Pane("p17"),
+            (13): Pane("p18"),
+            (9): Pane("p19"),
+            (2): Pane("p20"),
+            (29): Pane("p21"),
+            (26): Pane("p22"),
+            (31): Pane("p23"),
+            (43): Pane("p24"),
+            (1): Pane("p25"),
+        },
+        invisible: [],
+    ),
+    viewport_tiles: [],
+    height: None,
+    width: None,
+)

@@ -1,0 +1,39 @@
+(
+    id: (12341478319835764057),
+    root: Some((5)),
+    tiles: (
+        next_tile_id: 6,
+        tiles: {
+            (2): Pane("p1"),
+            (4): Container(Linear((
+                children: [
+                    (2),
+                    (3),
+                ],
+                dir: Vertical,
+                shares: (
+                    shares: {},
+                ),
+            ))),
+            (5): Container(Linear((
+                children: [
+                    (1),
+                    (4),
+                ],
+                dir: Horizontal,
+                shares: (
+                    shares: {
+                        (4): 2.7,
+                        (1): 0.3,
+                    },
+                ),
+            ))),
+            (1): Pane("p0"),
+            (3): Pane("p2"),
+        },
+        invisible: [],
+    ),
+    viewport_tiles: [],
+    height: None,
+    width: None,
+)

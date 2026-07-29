@@ -1,0 +1,44 @@
+(
+    id: (2187307822305563192),
+    root: Some((7)),
+    tiles: (
+        next_tile_id: 8,
+        tiles: {
+            (4): Pane("p3"),
+            (5): Container(Grid((
+                children: [
+                    Some((1)),
+                    None,
+                    Some((3)),
+                    Some((4)),
+                ],
+                layout: Auto,
+                col_shares: [],
+                row_shares: [],
+            ))),
+            (6): Container(Tabs((
+                children: [
+                    (2),
+                ],
+                active: Some((2)),
+            ))),
+            (7): Container(Linear((
+                children: [
+                    (5),
+                    (6),
+                ],
+                dir: Horizontal,
+                shares: (
+                    shares: {},
+                ),
+            ))),
+            (2): Pane("p1"),
+            (1): Pane("p0"),
+            (3): Pane("p2"),
+        },
+        invisible: [],
+    ),
+    viewport_tiles: [],
+    height: None,
+    width: None,
+)

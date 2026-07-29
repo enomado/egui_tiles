@@ -1,0 +1,33 @@
+[package]
+name = "egui_tiles-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# The crate root is a workspace (it defines `[workspace.lints]`), and this crate is not one of
+# its members — it is built only by `cargo fuzz`. An empty table keeps it out.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+# The persisted format is what the downstream application actually writes: RON, not JSON.
+# Fuzzing the format we really store is the whole point of seeding with real layouts.
+ron = "0.12.2"
+# Needed only to write a headless `Behavior` (its signatures mention `egui::Ui`/`WidgetText`);
+# no window, no rendering — `gc`/`simplify` only ever call `retain_pane`.
+egui = { version = "0.35.0", default-features = false }
+
+[dependencies.egui_tiles]
+path = ".."
+features = ["serde"]
+
+[[bin]]
+name = "tree_persist"
+path = "fuzz_targets/tree_persist.rs"
+test = false
+doc = false
+bench = false
