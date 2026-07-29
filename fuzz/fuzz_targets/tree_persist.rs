@@ -32,9 +32,27 @@
 
 use libfuzzer_sys::fuzz_target;
 
-use egui_tiles::{Behavior, SimplificationOptions, TileId, Tree, UiResponse};
+use egui_tiles::{Behavior, SimplificationOptions, Tile, TileId, Tree, UiResponse};
 
 type Pane = ron::Value;
+
+/// Same tree, every pane payload replaced by the same marker.
+///
+/// The round-trip claim is about the *layout* — which tiles exist, how they nest, their ids,
+/// shares, visibility, windows. Whether a pane payload survives serde is a property of the
+/// application's own pane type, and here that type is `ron::Value`, which has quirks of its own:
+/// it does not preserve a float's width suffix, so a payload written as `inff64` comes back as an
+/// f32 infinity and compares unequal. Interesting, but a fact about `ron`, not about this crate —
+/// and left in, it would mask every layout finding behind it.
+fn layout_only(tree: &Tree<Pane>) -> Tree<Pane> {
+    let mut tree = tree.clone();
+    for (_id, tile) in tree.tiles.iter_mut() {
+        if let Tile::Pane(pane) = tile {
+            *pane = ron::Value::Unit;
+        }
+    }
+    tree
+}
 
 /// Headless behavior: `gc`/`simplify` only ever consult `retain_pane`, never draw.
 struct Headless;
@@ -70,7 +88,7 @@ fuzz_target!(|data: &[u8]| {
     // `f32` fields (linear shares, grid row/column shares, the tree's own width/height) can hold
     // a NaN that came from the file, and NaN != NaN makes equality useless as an oracle. A tree
     // that is not even equal to a copy of itself is exactly that case, and nothing else.
-    let comparable = tree == tree.clone();
+    let comparable = layout_only(&tree) == layout_only(&tree);
     if comparable {
         let once = match ron::ser::to_string_pretty(&tree, ron::ser::PrettyConfig::default()) {
             Ok(text) => text,
@@ -81,7 +99,7 @@ fuzz_target!(|data: &[u8]| {
             Err(error) => panic!("our own output did not parse back: {error}\n{once}"),
         };
         assert!(
-            tree == back,
+            layout_only(&tree) == layout_only(&back),
             "a save/load round-trip changed the tree\nbefore: {tree:#?}\nafter: {back:#?}\ntext:\n{once}"
         );
         assert_eq!(
