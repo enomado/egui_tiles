@@ -393,23 +393,24 @@ impl<Pane> Tiles<Pane> {
     ///
     /// Finally free up any tiles that are no longer reachable from the root.
     ///
-    /// A single shared `visited` set spans every root passed in, so a tile that is
-    /// reachable from *any* of them survives — needed because a tree can have several
-    /// independent roots (the main root plus one per detached viewport window), and
-    /// none of their subtrees should be collected just because another root doesn't
-    /// reach them.
-    ///
-    /// Does not itself decide whether a root tile that got collected should stop being
-    /// named as a root — callers check that afterwards (see `Tree::gc`, upstream #150).
-    pub(super) fn gc_roots(&mut self, behavior: &mut dyn Behavior<Pane>, roots: &[TileId]) {
+    /// Returns, for each of `roots` and in the same order, whether that root survived. A root
+    /// does not survive when the tile is missing from the arena, when [`Behavior::retain_pane`]
+    /// asks for it to go, or when an *earlier* root already reached it — the last case being how
+    /// two detached windows can end up claiming the same tile. The caller owns the list of roots,
+    /// so it is the caller that has to stop calling those tiles roots; keeping them would leave
+    /// the tree with a root that does not exist, or with one subtree living under two roots.
+    #[must_use]
+    pub(super) fn gc_roots(
+        &mut self,
+        behavior: &mut dyn Behavior<Pane>,
+        roots: &[TileId],
+    ) -> Vec<bool> {
         let mut visited = Default::default();
 
-        for &root_id in roots {
-            // We ignore the returned root action: with several roots in play, "this
-            // particular root's tile got collected" doesn't mean the tile is gone from
-            // every root — `Tree::gc` re-checks survival per root after this returns.
-            let _root_action = self.gc_tile_id(behavior, &mut visited, root_id);
-        }
+        let kept: Vec<bool> = roots
+            .iter()
+            .map(|&root_id| self.gc_tile_id(behavior, &mut visited, root_id) == GcAction::Keep)
+            .collect();
 
         if visited.len() < self.tiles.len() {
             // Usually this means a viewport window was just closed (its whole subtree
@@ -454,6 +455,8 @@ impl<Pane> Tiles<Pane> {
                 tabs.active = next_active;
             }
         }
+
+        kept
     }
 
     /// Detect cycles, duplications, and other invalid state, and remove them.

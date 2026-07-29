@@ -770,18 +770,31 @@ impl<Pane> Tree<Pane> {
     /// Garbage-collect tiles that are no longer reachable from the root tile.
     ///
     /// This is also called by [`Self::ui`], so usually you don't need to call this yourself.
+    ///
+    /// A root that the collector could not keep stops being a root here: the tile is missing from
+    /// the arena, the [`Behavior`] asked for it to go, or an earlier root already owned it. The
+    /// last case is the one a file can produce all by itself — two detached windows naming the
+    /// same tile, or a window naming a tile that also hangs in the main tree. Both windows would
+    /// then render the same subtree, under the same `ViewportId` (it is derived from the root
+    /// tile), which is one window's worth of identity for two windows.
     pub fn gc(&mut self, behavior: &mut dyn Behavior<Pane>) {
-        self.tiles.gc_roots(behavior, &self.roots());
+        // Order is the priority rule: the main tree is asked for first, so a detached window
+        // that claims a tile the main tree already owns is the one that loses it.
+        let mut roots: Vec<TileId> = Vec::with_capacity(1 + self.viewport_tiles.len());
+        roots.extend(self.root);
+        roots.extend(self.viewport_tiles.iter().map(|viewport| viewport.root));
 
-        // #150: a root whose tile got collected must stop being named as a root — the
-        // main root and every detached viewport root are each checked independently.
-        if let Some(root) = self.root
-            && self.tiles.get(root).is_none()
-        {
+        let kept = self.tiles.gc_roots(behavior, &roots);
+        let mut kept = kept.into_iter();
+
+        if self.root.is_some() && !kept.next().unwrap_or(true) {
             self.root = None;
         }
+        // `retain` visits in order, so the remaining flags line up with the windows one for one —
+        // which matters precisely in the duplicate case, where two windows share an id and only
+        // the first of them may stay.
         self.viewport_tiles
-            .retain(|viewport| self.tiles.get(viewport.root).is_some());
+            .retain(|_viewport| kept.next().unwrap_or(true));
     }
 
     /// Check the structural invariants of the tile arena, returning `Err(reason)` on the first
@@ -1547,6 +1560,85 @@ mod tests {
             tree.tiles.get(pane).is_some(),
             "the pane must still be in the tree after gc+simplify"
         );
+    }
+
+    /// Two detached windows cannot own the same tile.
+    ///
+    /// `gc` used to skip this by construction — "we will never remove a root" — so a file naming
+    /// one tile as the root of two windows survived every pass untouched. Both windows then
+    /// rendered the same subtree, and, since `ViewportId` is derived from the root tile id, both
+    /// asked egui for the *same window*. Found by the `tree_persist` fuzzer.
+    #[test]
+    fn a_tile_cannot_be_the_root_of_two_windows() {
+        let mut tiles = Tiles::default();
+        let pane = tiles.insert_pane("detached");
+        let other = tiles.insert_pane("stays home");
+        let root = tiles.insert_tab_tile(vec![other]);
+        let mut tree = Tree::new("two_windows", root, tiles);
+
+        // What a saved file can say (`move_tile_to_new_viewport` would never do this twice).
+        tree.viewport_tiles.push(ViewportTile {
+            root: pane,
+            screen_pos: egui::pos2(0.0, 0.0),
+            dragged: false,
+        });
+        tree.viewport_tiles.push(ViewportTile {
+            root: pane,
+            screen_pos: egui::pos2(0.0, 6.0),
+            dragged: false,
+        });
+        assert!(tree.validate().is_err(), "setup: two windows, one tile");
+
+        tree.gc(&mut KeepEverything);
+
+        assert_eq!(tree.validate(), Ok(()));
+        assert_eq!(
+            tree.viewport_tiles.len(),
+            1,
+            "the duplicate window has to go — but only the duplicate"
+        );
+        assert_eq!(tree.viewport_tiles[0].root, pane);
+        assert_eq!(
+            tree.viewport_tiles[0].screen_pos,
+            egui::pos2(0.0, 0.0),
+            "the window that was there first is the one that stays"
+        );
+        assert!(tree.tiles.get(pane).is_some(), "the tile itself survives");
+    }
+
+    /// A window claiming a tile that also hangs in the main tree loses it: the main tree is asked
+    /// for its tiles first, and a tile can only live in one place.
+    #[test]
+    fn a_window_does_not_get_to_own_a_tile_the_main_tree_already_has() {
+        let mut tiles = Tiles::default();
+        let pane = tiles.insert_pane("in the tree");
+        let root = tiles.insert_tab_tile(vec![pane]);
+        let mut tree = Tree::new("claimed", root, tiles);
+
+        tree.viewport_tiles.push(ViewportTile {
+            root: pane,
+            screen_pos: egui::pos2(10.0, 10.0),
+            dragged: false,
+        });
+        assert!(tree.validate().is_err(), "setup: a root that is a child");
+
+        tree.gc(&mut KeepEverything);
+
+        assert_eq!(tree.validate(), Ok(()));
+        assert!(
+            tree.viewport_tiles.is_empty(),
+            "the window is the claim that loses"
+        );
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Tabs(container))) => {
+                assert_eq!(
+                    container.children,
+                    vec![pane],
+                    "the tile stays where the main tree has it"
+                );
+            }
+            other => panic!("expected a tab container, got {other:?}"),
+        }
     }
 
     /// The same repair, reached from the other direction: `gc` itself removes the pane that was
