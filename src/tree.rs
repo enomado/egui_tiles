@@ -1562,6 +1562,53 @@ mod tests {
         );
     }
 
+    /// `simplify` must let go of a tab it removes.
+    ///
+    /// Pruning an empty container is routine — a layout arrives with one after any number of
+    /// ordinary edits — and it can be the container's *open* tab. `Tabs::simplify_children`
+    /// carried `active` across a `Replace` but forgot it on a `Remove`, so `simplify` handed back
+    /// a tab container whose open tab was a tile no longer in the tree. Found by the
+    /// `tree_persist` fuzzer, one `gc` after another repair of the same field: the invariant
+    /// holds only if every pass that can remove a tab knows about it.
+    #[test]
+    fn simplify_lets_go_of_a_tab_it_removes() {
+        let mut tiles = Tiles::default();
+        let empty = tiles.insert_horizontal_tile(vec![]);
+        let pane = tiles.insert_pane("keep");
+        // Two survivors, not one: with a single child left, `prune_single_child_tabs` would
+        // dissolve the tab container itself and the damaged field would vanish with it — a scene
+        // that passes whether or not the bug is there.
+        let other = tiles.insert_pane("keep too");
+        let root = tiles.insert_tab_tile(vec![empty, pane, other]);
+        let mut tree = Tree::new("simplify_active", root, tiles);
+
+        match tree.tiles.get(root) {
+            Some(Tile::Container(Container::Tabs(container))) => assert_eq!(
+                container.active,
+                Some(empty),
+                "setup: the container about to be pruned is the open tab"
+            ),
+            other => panic!("expected a tab container, got {other:?}"),
+        }
+        assert_eq!(
+            tree.validate(),
+            Ok(()),
+            "setup: this tree is well-formed — `simplify` is what breaks it"
+        );
+
+        tree.simplify(&SimplificationOptions::default());
+
+        assert_eq!(tree.validate(), Ok(()));
+        assert!(
+            tree.tiles.get(empty).is_none(),
+            "the empty container should have been pruned"
+        );
+        assert!(
+            tree.tiles.get(pane).is_some(),
+            "the surviving pane must still be there"
+        );
+    }
+
     /// Two detached windows cannot own the same tile.
     ///
     /// `gc` used to skip this by construction — "we will never remove a root" — so a file naming
