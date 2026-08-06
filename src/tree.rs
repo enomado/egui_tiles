@@ -1282,56 +1282,6 @@ mod tests {
         assert!(tree.is_empty(), "an empty tree has to say that it is empty");
     }
 
-    /// A tile named as a child by two containers must lose the second *reference*, not itself.
-    ///
-    /// `gc` takes a tile out of the arena on the way in and puts it back on the way out, but the
-    /// early return for a tile it has already visited skips the putting back — so the tile is
-    /// deleted, while the container that legitimately owns it keeps naming it. `simplify` then
-    /// prunes that container as empty, and its parent, and the whole tree can disappear.
-    #[test]
-    fn gc_drops_the_second_reference_to_a_shared_tile_and_not_the_tile() {
-        let mut tiles = Tiles::default();
-        let pane = tiles.insert_pane("shared");
-        let first = tiles.insert_tab_tile(vec![pane]);
-        let second = tiles.insert_tab_tile(vec![pane]); // the same tile, a second parent
-        let root = tiles.insert_horizontal_tile(vec![first, second]);
-        let mut tree = Tree::new("shared", root, tiles);
-
-        tree.gc(&mut KeepEverything);
-
-        assert!(
-            tree.tiles.get(pane).is_some(),
-            "the shared tile itself must survive - only one of the two references is bogus"
-        );
-        assert_eq!(
-            tree.tiles
-                .get_container(first)
-                .expect("the first parent should still be a container")
-                .children_vec(),
-            vec![pane],
-            "the first parent to reach the tile keeps it"
-        );
-        assert!(
-            tree.tiles
-                .get_container(second)
-                .expect("the second parent should still be a container")
-                .children_vec()
-                .is_empty(),
-            "the second reference is the one that has to go"
-        );
-
-        // And the point of it all: the rest of the frame must not unravel the tree.
-        tree.simplify(&SimplificationOptions::default());
-        assert!(
-            tree.root.is_some(),
-            "the tree must still have a root after gc+simplify"
-        );
-        assert!(
-            tree.tiles.get(pane).is_some(),
-            "the pane must still be in the tree after gc+simplify"
-        );
-    }
-
     /// Re-docking a detached viewport returns its root to the main tree and
     /// removes the window (it is no longer a viewport root).
     #[test]
@@ -1410,46 +1360,6 @@ mod tests {
         assert_eq!(tree.validate(), Ok(()));
     }
 
-    /// Keeps every pane; used to drive `gc` in tests that are not about `retain_pane`.
-    struct KeepEverything;
-
-    impl Behavior<&'static str> for KeepEverything {
-        fn pane_ui(
-            &mut self,
-            _ui: &mut egui::Ui,
-            _tile_id: TileId,
-            _pane: &mut &'static str,
-        ) -> UiResponse {
-            UiResponse::None
-        }
-
-        fn tab_title_for_pane(&mut self, pane: &&'static str) -> egui::WidgetText {
-            (*pane).into()
-        }
-    }
-
-    /// Drops one specific pane, the way an application removes a closed document.
-    struct DropPane(&'static str);
-
-    impl Behavior<&'static str> for DropPane {
-        fn pane_ui(
-            &mut self,
-            _ui: &mut egui::Ui,
-            _tile_id: TileId,
-            _pane: &mut &'static str,
-        ) -> UiResponse {
-            UiResponse::None
-        }
-
-        fn tab_title_for_pane(&mut self, pane: &&'static str) -> egui::WidgetText {
-            (*pane).into()
-        }
-
-        fn retain_pane(&mut self, pane: &&'static str) -> bool {
-            *pane != self.0
-        }
-    }
-
     /// A saved layout can say that the open tab of a tab container is a tile which is not one of
     /// its tabs — serde builds the arena directly, so nothing stops it. `gc` is the pass whose
     /// documented job is "detect invalid state and fix it", and this is invalid state.
@@ -1498,30 +1408,6 @@ mod tests {
             }
             other => panic!("expected a tab container, got {other:?}"),
         }
-    }
-
-    /// A root the collector had to drop must stop being a root.
-    ///
-    /// A single pane can be the root - `simplify` produces exactly that once a tab container is
-    /// down to one child - and `retain_pane` is how an application closes it. Without the report
-    /// from `gc_roots`, the tile went away and `root` kept naming it: the tree rendered nothing
-    /// while `is_empty()` still said `false`. Sent upstream as
-    /// <https://github.com/rerun-io/egui_tiles/pull/150>, where the same hole exists with a single
-    /// root and no windows.
-    #[test]
-    fn gc_clears_a_root_it_had_to_drop() {
-        let mut tiles = Tiles::default();
-        let only = tiles.insert_pane("doomed");
-        let mut tree = Tree::new("root_pane", only, tiles);
-
-        tree.gc(&mut DropPane("doomed"));
-
-        assert_eq!(
-            tree.root, None,
-            "the root tile is gone, so the tree must not still name it"
-        );
-        assert!(tree.is_empty(), "an empty tree has to say that it is empty");
-        assert_eq!(tree.validate(), Ok(()));
     }
 
     /// A tile named as a child by two different containers must lose the second *reference*, not
